@@ -1,0 +1,285 @@
+import json, csv, re
+from datetime import datetime
+import tkinter as tk
+from tkinter import messagebox, filedialog, ttk
+
+# --- VARIABLE TYPES ---
+version_float: float     = 1.3
+# only .json is supported for loading — CSV/TXT are export-only formats
+allowed_ext:   set       = {".json"}
+used_files:    set       = set()
+debug_mode:    bool      = False
+valid_score_range: range = range(0, 65)
+required_fields: frozenset = frozenset({"name", "surname", "dob", "student_id"})
+NAME_PATTERN: re.Pattern = re.compile(r"^[A-Za-zА-Яа-яЁё\s'\-]{2,}$")  # regex: letters only
+
+# --- QUESTIONS ---
+questions = [
+    {"q": "How often do you plan your daily tasks in advance?",
+     "opts": [("Always",0),("Often",1),("Sometimes",2),("Rarely",3),("Never",4)]},
+    {"q": "How frequently do you prioritise tasks before starting your work?",
+     "opts": [("Always",0),("Often",1),("Sometimes",2),("Rarely",3),("Never",4)]},
+    {"q": "How often do you complete tasks within the planned time?",
+     "opts": [("Always",0),("Often",1),("Sometimes",2),("Rarely",3),("Never",4)]},
+    {"q": "How often do you feel in control of your time?",
+     "opts": [("Always",0),("Often",1),("Sometimes",2),("Rarely",3),("Never",4)]},
+    {"q": "How often do you divide your day into time blocks?",
+     "opts": [("Always",0),("Often",1),("Sometimes",2),("Rarely",3),("Never",4)]},
+    {"q": "How clearly do you define tasks within each time block?",
+     "opts": [("Very clearly",0),("Clearly",1),("Moderately",2),("Slightly",3),("Not at all",4)]},
+    {"q": "How often do you follow your planned time blocks?",
+     "opts": [("Always",0),("Often",1),("Sometimes",2),("Rarely",3),("Never",4)]},
+    {"q": "How often do you switch between tasks while studying?",
+     "opts": [("Never",0),("Rarely",1),("Sometimes",2),("Often",3),("Always",4)]},
+    {"q": "How often are you distracted (e.g., phone use) during study?",
+     "opts": [("Never",0),("Rarely",1),("Sometimes",2),("Often",3),("Always",4)]},
+    {"q": "How difficult is it to refocus after distraction?",
+     "opts": [("Not difficult",0),("Slightly difficult",1),("Moderately difficult",2),("Difficult",3),("Very difficult",4)]},
+    {"q": "How engaged are you in academic activities?",
+     "opts": [("Highly engaged",0),("Engaged",1),("Moderately engaged",2),("Slightly engaged",3),("Not engaged",4)]},
+    {"q": "How often do you procrastinate on academic tasks?",
+     "opts": [("Never",0),("Rarely",1),("Sometimes",2),("Often",3),("Always",4)]},
+    {"q": "How confident are you in managing your academic workload?",
+     "opts": [("Very confident",0),("Confident",1),("Moderately confident",2),("Slightly confident",3),("Not confident",4)]},
+    {"q": "How effective is your schedule for completing tasks?",
+     "opts": [("Very effective",0),("Effective",1),("Moderately effective",2),("Slightly effective",3),("Not effective",4)]},
+    {"q": "How much does time blocking reduce distractions?",
+     "opts": [("Very significantly",0),("Significantly",1),("Moderately",2),("Slightly",3),("Not at all",4)]},
+    {"q": "How effective is time blocking in helping you meet deadlines?",
+     "opts": [("Very effective",0),("Effective",1),("Moderately effective",2),("Slightly effective",3),("Not effective",4)]},
+]
+
+# --- SCORING STATES (total: 0–64) ---
+states = {
+    "Excellent Control":      (0,  10),
+    "Strong Performance":     (11, 20),
+    "Moderate Effectiveness": (21, 32),
+    "Low Effectiveness":      (33, 44),
+    "Poor Time Management":   (45, 54),
+    "Critical Level":         (55, 64),
+}
+
+# --- VALIDATION ---
+def validate_name(name: str) -> bool:
+    name = name.strip()
+    if not NAME_PATTERN.match(name):   # regex check
+        return False
+    i, is_valid = 0, True              # bool
+    while i < len(name):               # while loop — no digits allowed
+        if name[i].isdigit(): is_valid = False; break
+        i += 1
+    return is_valid
+
+def validate_dob(dob: str) -> bool:
+    try: datetime.strptime(dob, "%Y-%m-%d"); return True
+    except ValueError: return False
+
+def validate_sid(sid: str) -> bool:
+    if len(sid) < 4: return False
+    for ch in sid:                     # for loop — digits only
+        if not ch.isdigit(): return False
+    return True
+
+def interpret_score(score: int) -> str:
+    if score not in valid_score_range: return "Out of Range"  # range check
+    for state, (lo, hi) in states.items():
+        if lo <= score <= hi: return state
+    return "Unknown"
+
+def get_recommendation(score: int) -> str:
+    if score <= 10: return "Excellent Control! Highly effective time blocking and productivity."
+    if score <= 20: return "Strong Performance. Good scheduling with only minor improvements needed."
+    if score <= 32: return "Moderate Effectiveness. Some inconsistency — consider refining your structure."
+    if score <= 44: return "Low Effectiveness. Frequent distractions and weak structure need attention."
+    if score <= 54: return "Poor Time Management. High multitasking and low control — start restructuring now."
+    return "Critical Level. Severe lack of structure — urgent improvement needed."
+
+# --- SAVE FUNCTIONS ---
+def save_json(path, data):
+    # JSON preserves full nested structure — best for reloading results later
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except OSError as e:
+        messagebox.showerror("Save Error", f"Could not save JSON:\n{e}")
+
+def save_csv(path, rec):
+    # CSV allows easy analysis in Excel/Sheets — flat format suits tabular data
+    try:
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["name","surname","dob","student_id","total_score","result"])
+            w.writerow([rec["name"],rec["surname"],rec["dob"],rec["student_id"],rec["total_score"],rec["result"]])
+            w.writerow([])
+            w.writerow(["#","question","answer","score"])
+            for i, a in enumerate(rec["answers"], 1):
+                w.writerow([i, a["question"], a["selected_option"], a["score"]])
+    except OSError as e:
+        messagebox.showerror("Save Error", f"Could not save CSV:\n{e}")
+
+def save_txt(path, rec):
+    # TXT gives a human-readable printable report — no software needed to open
+    try:
+        lines = ["="*50, "  TIME BLOCKING SURVEY REPORT", "="*50,
+                 f"  Name  : {rec['name']} {rec['surname']}",
+                 f"  DOB   : {rec['dob']}",
+                 f"  ID    : {rec['student_id']}",
+                 "-"*50,
+                 f"  Score : {rec['total_score']} / 64",
+                 f"  Result: {rec['result']}",
+                 f"  Note  : {rec['recommendation']}",
+                 "="*50, "  ANSWERS", "-"*50]
+        for i, a in enumerate(rec["answers"], 1):   # for loop — write each answer
+            lines.append(f"  Q{i:02d}. {a['question']}")
+            lines.append(f"       → {a['selected_option']} (score: {a['score']})")
+        lines.append("="*50)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    except OSError as e:
+        messagebox.showerror("Save Error", f"Could not save TXT:\n{e}")
+
+# --- APP ---
+class SurveyApp:
+    def __init__(self, root):
+        self.root = root
+        root.title("Time Blocking Survey")
+        root.geometry("520x500")
+        self.completed: bool = False    # bool — tracks if survey is done
+        self.main_menu()
+
+    def clear(self):
+        for w in self.root.winfo_children(): w.destroy()
+
+    def main_menu(self):
+        self.clear()
+        self.completed = False
+        tk.Label(self.root, text="Time Blocking Survey", font=("Arial",16,"bold")).pack(pady=15)
+        for txt, cmd in [
+            ("1. Load existing result",          self.load_file),
+            ("2. Start new questionnaire",       self.start_new),
+            ("3. Load questions from file",      self.load_questions),
+            ("4. Save questions + states",       self.save_questions),
+        ]:
+            tk.Button(self.root, text=txt, width=40, command=cmd).pack(pady=5)
+
+    def load_file(self):
+        path = filedialog.askopenfilename(filetypes=[("JSON","*.json")])
+        if not path: return
+        if "." + path.rsplit(".",1)[-1] not in allowed_ext:   # set check
+            return messagebox.showerror("Error","Only .json files allowed.")
+        try:
+            data = json.load(open(path, encoding="utf-8"))
+            used_files.add(path)                               # set tracking
+            self.clear()
+            tk.Label(self.root, text="Loaded Result", font=("Arial",14,"bold")).pack(pady=10)
+            info = "\n".join([f"Name: {data.get('name','')} {data.get('surname','')}",
+                              f"DOB: {data.get('dob','')}", f"ID: {data.get('student_id','')}",
+                              f"Score: {data.get('total_score','')}  |  Result: {data.get('result','')}",
+                              f"\n{data.get('recommendation','')}"])
+            tk.Label(self.root, text=info, justify="left", wraplength=470).pack(pady=10, padx=20)
+            tk.Button(self.root, text="Back", command=self.main_menu).pack(pady=8)
+        except Exception as e: messagebox.showerror("Error", f"Could not read file:\n{e}")
+
+    def save_questions(self):
+        save_json("survey_questions_and_states.json", {"questions": questions, "states": states})
+        messagebox.showinfo("Saved","Saved to survey_questions_and_states.json")
+
+    def start_new(self):
+        self.qs = questions; self.show_form()
+
+    def load_questions(self):
+        path = filedialog.askopenfilename(filetypes=[("JSON","*.json")])
+        if not path: return
+        try: self.qs = json.load(open(path, encoding="utf-8"))
+        except Exception as e: return messagebox.showerror("Error", f"Invalid question file:\n{e}")
+        self.show_form()
+
+    def show_form(self):
+        self.clear()
+        tk.Label(self.root, text="Your Details", font=("Arial",14,"bold")).pack(pady=10)
+        self.v = {k: tk.StringVar() for k in ["name","surname","dob","sid"]}
+        for lbl, key in [("Given Name:","name"),("Surname:","surname"),
+                         ("Date of Birth (YYYY-MM-DD):","dob"),("Student ID (min 4 digits):","sid")]:
+            f = tk.Frame(self.root); f.pack(pady=3)
+            tk.Label(f, text=lbl, width=26, anchor="w").pack(side="left")
+            tk.Entry(f, textvariable=self.v[key], width=22).pack(side="left")
+        tk.Button(self.root, text="Start Survey", command=self.submit_form,
+                  bg="#4CAF50", fg="white").pack(pady=12)
+
+    def submit_form(self):
+        n, s, d, sid = (self.v[k].get().strip() for k in ["name","surname","dob","sid"])
+        errs = []
+        if not validate_name(n):   errs.append("• Name: letters only, min 2 chars.")
+        if not validate_name(s):   errs.append("• Surname: letters only, min 2 chars.")
+        if not validate_dob(d):    errs.append("• DOB must be YYYY-MM-DD.")
+        if not validate_sid(sid):  errs.append("• Student ID: min 4 digits.")
+        if errs: return messagebox.showerror("Errors", "\n".join(errs))
+
+        self.rec = {"name":n,"surname":s,"dob":d,"student_id":sid,"version":version_float}
+        if not required_fields.issubset(frozenset(self.rec)):  # frozenset check
+            return messagebox.showerror("Error","Missing fields.")
+
+        self.idx, self.score, self.answers = 0, 0, []
+        self.show_q()
+
+    def show_q(self):
+        self.clear()
+        q, total = self.qs[self.idx], len(self.qs)
+        tk.Label(self.root, text=f"Question {self.idx+1} of {total}", font=("Arial",13,"bold")).pack(pady=8)
+        ttk.Progressbar(self.root, length=420, maximum=total, value=self.idx).pack(pady=3)
+        tk.Label(self.root, text=q["q"], wraplength=470, font=("Arial",11)).pack(pady=10, padx=20)
+        self.sel = tk.IntVar(value=-1)
+        for i, (txt, _) in enumerate(q["opts"], 1):
+            tk.Radiobutton(self.root, text=txt, variable=self.sel, value=i).pack(anchor="w", padx=40)
+        tk.Button(self.root, text="Next →", command=self.next_q,
+                  bg="#2196F3", fg="white").pack(pady=12)
+
+    def next_q(self):
+        if self.sel.get() == -1: return messagebox.showerror("Error","Please select an option.")
+        txt, pts = self.qs[self.idx]["opts"][self.sel.get()-1]
+        self.score += pts
+        self.answers.append({"question": self.qs[self.idx]["q"], "selected_option": txt, "score": pts})
+        self.idx += 1
+        self.finish() if self.idx >= len(self.qs) else self.show_q()
+
+    def finish(self):
+        self.completed = True               # bool flag
+        result = interpret_score(self.score)
+        rec    = self.rec
+        rec.update({"total_score": self.score, "result": result,
+                    "recommendation": get_recommendation(self.score), "answers": self.answers})
+        self.clear()
+        tk.Label(self.root, text="Survey Completed!", font=("Arial",16,"bold")).pack(pady=10)
+        tk.Label(self.root, text=f"Score: {self.score} / 64",  font=("Arial",12)).pack(pady=3)
+        tk.Label(self.root, text=f"Result: {result}", font=("Arial",12,"bold"), fg="#1565C0").pack(pady=3)
+        tk.Label(self.root, text=rec["recommendation"], wraplength=470, fg="#555").pack(pady=6, padx=20)
+
+        # Score legend
+        frame = tk.LabelFrame(self.root, text="Score Guide", padx=6, pady=3)
+        frame.pack(pady=5, padx=30, fill="x")
+        for (st,(lo,hi)), icon in zip(states.items(), ["🏆","✅","👍","⚠️","📌","🚨"]):
+            marker = "  ◀ YOU" if st == result else ""
+            tk.Label(frame, text=f"{icon} {lo}–{hi}: {st}{marker}",
+                     fg="#1565C0" if marker else "#444", anchor="w").pack(fill="x")
+
+        # Save buttons
+        bf = tk.Frame(self.root); bf.pack(pady=8)
+        for txt, fmt, col in [("💾 JSON","json","#4CAF50"),("📊 CSV","csv","#1976D2"),("📄 TXT","txt","#6A1B9A")]:
+            tk.Button(bf, text=txt, command=lambda f=fmt: self.save(f),
+                      bg=col, fg="white", width=11).pack(side="left", padx=4)
+        tk.Button(self.root, text="← Menu", command=self.main_menu).pack(pady=3)
+
+    def save(self, fmt):
+        if not self.completed: return messagebox.showwarning("Warning","No survey to save.")
+        fmts = {"json":("JSON","*.json",".json"), "csv":("CSV","*.csv",".csv"), "txt":("Text","*.txt",".txt")}
+        desc, pat, ext = fmts[fmt]
+        path = filedialog.asksaveasfilename(defaultextension=ext, filetypes=[(desc,pat)])
+        if not path: return
+        {"json": save_json, "csv": save_csv, "txt": save_txt}[fmt](path, self.rec)
+        used_files.add(path)               # set tracking
+        messagebox.showinfo("Saved", f"Saved as {fmt.upper()}")
+
+# --- RUN ---
+root = tk.Tk()
+SurveyApp(root)
+root.mainloop()
